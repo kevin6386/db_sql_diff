@@ -1,0 +1,113 @@
+#!/usr/bin/perl 
+use DBI;
+use strict;
+use Getopt::Std;
+my %options_ssh;
+#定义传入参数
+getopts('t:',\%options_ssh);
+my $type=$options_ssh{'t'};
+#调用外部程序获取数据库信息
+my $dbh;
+#定义sql类型,接口int,认证auth或其他根据sql_db_list服务进行修改
+my $type='app';
+#定义收件人
+my $mail='pangkuo@aa.com';
+##定义源数据库ip,就是主库ip
+my $source_ip='master_ip';
+##定义获取数据库信息
+my $db_ip='soure_ip';
+my $db_user='aa_db';
+my $db_pass='aa_db*&%';
+my $db_dbname='system';
+##定义本地数据库信息
+my $local_dbip='localhost';
+my $local_dbuser='aa_back';
+my $local_dbpass='aa_back';
+my $local_db='mysql';
+my $LOG='/tmp/sql_diff.log';
+`>$LOG`;
+open(LOG_FILE,">>$LOG");
+#定义数据中心
+sub dbcon{
+	my $dsn="DBI:mysql:database=$db_dbname;host=$db_ip;port=3306;mysql_socket=/tmp/mysql.sock";
+	 $dbh = DBI->connect("$dsn","$db_user","$db_pass") or  die "Unable to connect: $DBI::errstr\n"; 
+	 $dbh->do("SET names utf8");
+
+}
+my $ldbh;
+#定义本地数据库信息
+sub local_dbcon{
+	    my $dsn1="DBI:mysql:database=$local_db;host=$local_dbip;port=3306;mysql_socket=/tmp/mysql.sock";
+	    $ldbh = DBI->connect("$dsn1","$local_dbuser","$local_dbpass") or  die "Unable to connect: $DBI::errstr\n";
+    	my $i=$ldbh->do("set names utf8;");
+}
+my $local_ip=`/sbin/ifconfig |grep inet| grep -i bcast|cut -d':' -f2|awk '{print \$1}'|grep -v -E '10.1|172.|192.|127.'`;
+chomp($local_ip);
+sub get_sql{
+	&dbcon();
+	&local_dbcon;
+	#获取样例中sql
+	my $sql="select `sql`,result from db_list_sql where type='$type' ";
+	my $sth = $dbh->prepare($sql);
+	$sth->execute();
+	my $info;
+	my $gsql;
+	my $i;
+	my $info2;
+	while (my @row = $sth->fetchrow_array ) {
+			$gsql=$row[0];
+			my $res=$row[1];
+			chomp($gsql);
+			chomp($res);
+			my $table;
+			if($gsql =~ /select\s+(.*)from\s+(.*)\s+where\s+(.*)/img){
+				$table=$2;
+				if($table =~ /(\w+)(.*)/img){
+					$table=$1;
+				}
+		    		if($table =~ /(\w+)(.*)join/img){
+					$table =$1;
+				}
+			}			
+			my $get_db="select TABLE_SCHEMA DB from information_schema.tables where table_name='$table' LIMIT 1";
+ 		    	my $gsth = $ldbh->prepare("$get_db");
+			$gsth->execute();
+			my $dbname;
+	        	while (my @row = $gsth->fetchrow_array ) {
+				$dbname=$row[0];
+			}
+			chomp($dbname);
+		        my $dsn1="DBI:mysql:database=$dbname;host=$local_dbip;port=3306;mysql_socket=/tmp/mysql.sock";
+		        $ldbh = DBI->connect("$dsn1","$local_dbuser","$local_dbpass") or  die "Unable to connect: $DBI::errstr\n";
+			#执行获取的样例sql,并取值
+			my $lsth = $ldbh->prepare($gsql);
+    			$lsth->execute();
+		    	while (my @row = $lsth->fetchrow_array ) { 
+				my $result=$row[$#row];
+				chomp($result);
+				#根据获取的sql,进行本地数据查询获取值进行和样例的值进行比对
+				if($result eq $res){
+					#print "$result == $res \n";
+				}else{
+					$info2.="SQL:$gsql\n 数据源样例值:$res 还原后获取的值:$result\n";
+					$i=1;
+
+				}
+
+			}
+	}
+	my $message;
+	print LOG_FILE $info2;
+	#如果i等1说明有比对异常结果,然后发送邮件
+	if( $i == '1' ){
+		$message="$local_ip 还原后与$db_ip 根据SQL查询值校对 异常 : 请查看附件 谢谢!\n";	
+	}else{
+		$message="$local_ip 还原后与$db_ip 根据SQL查询值校对 ok!";	
+	}
+	print $message;
+	`/usr/local/bin/sendEmail -f bjyunwei24\@aa.com -t $mail  -s mail.aa.com -u '$local_ip restore DB info' -xu bjyunwei24 -xp  bjyunwei24\@aa  -m '$message ' -o tls=no -o message-charset=UTF-8 -o message-content-type=html -o message-file=file -a $LOG`;
+
+}
+if(defined($type)){
+	&get_sql();
+}
